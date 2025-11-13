@@ -39,7 +39,97 @@ python indexarembeddings.py
 streamlit run buscadorvisual_app.py
 
 ```
+## Como Cargamos los modelos CLIP/FAISS y los embeddings para nuestro proyecto
+```
+@st.cache_resource
+def load_resources():
+    try:
+        # Cargar Modelo CLIP
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        model = CLIPModel.from_pretrained(MODEL_NAME).to(device)
+        processor = CLIPProcessor.from_pretrained(MODEL_NAME)
+        
+        # Cargar Índice FAISS
+        index = faiss.read_index(INDEX_PATH)
+        
+        # Cargar Mapeo de Rutas
+        image_paths = np.load(MAPPING_PATH, allow_pickle=True)
+        
+        st.success(f"Recursos cargados: Modelo en {device}, {index.ntotal} vectores indexados.")
+        return model, processor, index, image_paths, device
+    except Exception as e:
+        st.error(f"Error al cargar recursos. ¿Ejecutaste indexarembeddings.py? Error: {e}")
+        return None, None, None, None, None
 
+def get_query_embedding(query, model, processor, device):
+    """Genera el embedding de la consulta (imagen o texto)."""
+    with torch.no_grad():
+        if isinstance(query, Image.Image):
+            # Consulta por Imagen
+            inputs = processor(images=query.convert("RGB"), return_tensors="pt").to(device)
+            features = model.get_image_features(**inputs)
+        elif isinstance(query, str):
+            # Consulta por Texto (Ampliación)
+            inputs = processor(text=[query], return_tensors="pt", padding=True).to(device)
+            features = model.get_text_features(**inputs)
+        else:
+            return None
+
+        # Normalizar el vector de consulta
+        normalized_features = features / features.norm(p=2, dim=-1, keepdim=True)
+        return normalized_features.cpu().numpy().astype('float32')
+
+def search_index(query_embedding, index, image_paths, top_k):
+    """Busca en el índice FAISS."""
+    # D: Distancias (scores); I: IDs de los vecinos
+    distances, indices = index.search(query_embedding, top_k)
+    
+    # Las distancias en IndexFlatIP (producto interior) son la similitud del coseno.
+    results = []
+    for i, (idx, score) in enumerate(zip(indices[0], distances[0])):
+        # idx es el ID, image_paths[idx] es la ruta real del archivo
+        results.append({
+            'path': image_paths[idx],
+            'score': score
+        })
+    return results
+```
+## PER A EJECUTAR AMB STREAMLIT, LA INTERFAZ DE USUARI TRIADA
+```
+ if query is not None:
+        if st.button("Buscar Similares"):
+            with st.spinner("Buscando los vecinos más cercanos..."):
+                # 1. Generar embedding de la consulta
+                query_embedding = get_query_embedding(query, model, processor, device)
+                
+                if query_embedding is not None:
+                    # 2. Buscar en el índice
+                    results = search_index(query_embedding, index, image_paths, top_k)
+                    
+                    if results:
+                        # 3. Mostrar Resultados
+                        cols = st.columns(top_k)
+                        
+                        for i, result in enumerate(results):
+                            # Usamos os.path.join para asegurarnos de que la ruta de la imagen funcione
+                            full_path = result['path']
+                            
+                            try:
+                                img = Image.open(full_path)
+                                with cols[i]:
+                                    st.image(img, caption=f"Score: {result['score']:.4f}", use_container_width=True)
+                            except FileNotFoundError:
+                                st.error(f"No se encontró el archivo: {full_path}")
+                                
+                    else:
+                        st.warning("No se encontraron resultados.")
+                else:
+                    st.error("Error al generar el embedding de la consulta.")
+
+if __name__ == "__main__":
+    main()
+
+```
 ## Busqueda por Imagen (Score Alto)Qué ocurre: Cuando subes una foto (ej: un perro específico), estás comparando una instancia específica contra otras instancias específicas (las fotos de la base de datos).
 Resultado: El modelo encuentra imágenes muy similares (ej: otros perros de la misma raza o en la misma postura). Como el parecido es tan concreto y detallado, el score de similitud es alto (ej: 0.70 - 0.85).
 
