@@ -41,7 +41,6 @@ streamlit run buscadorvisual_app.py
 ```
 ## Como Cargamos los modelos CLIP/FAISS y los embeddings para nuestro proyecto
 ```
-@st.cache_resource
 def load_resources():
     try:
         # Cargar Modelo CLIP
